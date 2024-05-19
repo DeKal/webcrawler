@@ -66,7 +66,7 @@ func (WebCrawler) display(linksMap map[string][]string) {
 	}
 }
 
-func (WebCrawler) crawl(rootLink string, depth int) map[string][]string {
+func (w WebCrawler) crawl(rootLink string, depth int) map[string][]string {
 	var (
 		allLinksMap = make(map[string][]string)
 		q           = make([]struct {
@@ -86,7 +86,11 @@ func (WebCrawler) crawl(rootLink string, depth int) map[string][]string {
 		topLink := top.string
 		topLevel := top.int
 		if topLevel <= depth {
-			fmt.Println("exec go routine for link ", topLink, " and level ", topLevel)
+			if w.getEnableDebug() {
+				fmt.Println("exec go routine for link ", topLink, " and level ", topLevel)
+				defer fmt.Println("done go routine for link ", topLink, " and level ", topLevel)
+			}
+
 			allLinksMap[topLink] = httpParser.GetUniqueLinksFromUrl(topLink)
 			for _, link := range allLinksMap[topLink] {
 				if _, ok := visited[link]; !ok {
@@ -97,7 +101,6 @@ func (WebCrawler) crawl(rootLink string, depth int) map[string][]string {
 					visited[link] = true
 				}
 			}
-			fmt.Println("done go routine for link ", topLink, " and level ", topLevel)
 		}
 
 		q = q[1:]
