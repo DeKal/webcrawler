@@ -16,7 +16,9 @@ const (
 )
 
 type WebCrawler struct {
-	Mode Mode
+	Mode           Mode
+	MaxConcurrency int8
+	EnableDebug    bool
 }
 
 func (w WebCrawler) getCrawlFunc() func(rootLink string, depth int) map[string][]string {
@@ -41,6 +43,17 @@ func (w WebCrawler) Find(rootLinks []string, depth int) map[string][]string {
 
 func (w WebCrawler) FindAndDisPlay(rootLinks []string, depth int) {
 	w.display(w.Find(rootLinks, depth))
+}
+
+func (w WebCrawler) getMaxConcurrency() int8 {
+	if w.MaxConcurrency == 0 {
+		return 16
+	}
+	return min(w.MaxConcurrency, 32)
+}
+
+func (w WebCrawler) getEnableDebug() bool {
+	return w.EnableDebug
 }
 
 func (WebCrawler) display(linksMap map[string][]string) {
@@ -93,17 +106,31 @@ func (WebCrawler) crawl(rootLink string, depth int) map[string][]string {
 	return allLinksMap
 }
 
-func (WebCrawler) asyncCrawlWithChannel(rootLink string, depth int) map[string][]string {
+func (w WebCrawler) asyncCrawlWithChannel(rootLink string, depth int) map[string][]string {
 	var (
-		allLinksMap = make(map[string][]string)
-		q           = make(chan struct {
+		allLinksMap  = make(map[string][]string)
+		linksChannel = make(chan struct {
+			root  string
+			links []string
+		}, 100000)
+		q = make(chan struct {
 			string
 			int
-		}, 5000)
+		}, 100000)
 		size    int
 		visited = make(map[string]bool)
 		wg      sync.WaitGroup
+		lock    sync.RWMutex
 	)
+
+	go func() {
+		for item := range linksChannel {
+			allLinksMap[item.root] = item.links
+		}
+	}()
+
+	// Create a buffered channel to limit the number of concurrent goroutines
+	semaphore := make(chan struct{}, w.getMaxConcurrency())
 
 	q <- struct {
 		string
@@ -118,11 +145,26 @@ func (WebCrawler) asyncCrawlWithChannel(rootLink string, depth int) map[string][
 		wg.Add(1)
 
 		go func(topLink string, topLevel int, size *int) {
-			fmt.Println("exec go routine for link ", topLink, " and level ", topLevel)
+			semaphore <- struct{}{}
+			if w.getEnableDebug() {
+				fmt.Println("exec go routine for link ", topLink, " and level ", topLevel)
+				defer fmt.Println("#done go routine for link ", topLink, " and level ", topLevel)
+			}
+
 			defer wg.Done()
+			defer func() { <-semaphore }()
+
 			if topLevel <= depth {
-				allLinksMap[topLink] = httpParser.GetUniqueLinksFromUrl(topLink)
-				for _, link := range allLinksMap[topLink] {
+				links := httpParser.GetUniqueLinksFromUrl(topLink)
+				linksChannel <- struct {
+					root  string
+					links []string
+				}{
+					topLink, links,
+				}
+				for _, link := range links {
+
+					lock.Lock()
 					if _, ok := visited[link]; !ok {
 						q <- struct {
 							string
@@ -131,16 +173,18 @@ func (WebCrawler) asyncCrawlWithChannel(rootLink string, depth int) map[string][
 						visited[link] = true
 						*size++
 					}
+					lock.Unlock()
 				}
 
 			}
-			fmt.Println("#done go routine for link ", topLink, " and level ", topLevel)
 		}(top.string, top.int, &size)
 
 		if size == 0 {
 			wg.Wait()
 		}
 	}
+
+	close(linksChannel)
 
 	return allLinksMap
 }
